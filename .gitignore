@@ -1,0 +1,6 @@
+node_modules/
+dist/
+*.local
+.vite/
+npm-debug.log*
+dev-server*.log
