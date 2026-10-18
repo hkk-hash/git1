@@ -97,6 +97,7 @@ type DeviceCommand = {
 };
 
 const API_BASE = "https://apis.bemfa.com/va";
+const TOPIC_API = "https://apis.bemfa.com/vb/api/v2/allTopic";
 const CONFIG_KEY = "bemfa-console-config-v1";
 const BUTTONS_KEY = "bemfa-console-buttons-v1";
 const CHAINS_KEY = "bemfa-console-automation-v2";
@@ -306,9 +307,32 @@ function conditionMatches(condition: ChainCondition, telemetry: Telemetry) {
 
 function parseTelemetry(message: string): Telemetry | null {
   try {
-    const value = JSON.parse(message) as Partial<Telemetry>;
-    if (value.type !== "telemetry" || !value.sensors || !value.enabled || !value.outputs) return null;
-    return value as Telemetry;
+    const value = JSON.parse(message) as Partial<Telemetry> & { t?: string; q?: number; u?: number; a?: unknown[]; e?: number; o?: number[] };
+    if (value.type === "telemetry" && value.sensors && value.enabled && value.outputs) return value as Telemetry;
+    if (value.t !== "s" || !Array.isArray(value.a) || value.a.length < 8 || !Array.isArray(value.o) || value.o.length < 3) return null;
+    const sensor = value.a;
+    const enabled = Number(value.e ?? 0);
+    const outputMode = (mode: unknown): "off" | "on" | "blink" => Number(mode) === 2 ? "blink" : Number(mode) === 1 ? "on" : "off";
+    const nullableNumber = (raw: unknown) => raw === null || raw === undefined ? null : Number(raw);
+    return {
+      type: "telemetry",
+      version: 2,
+      seq: Number(value.q ?? 0),
+      uptime: Number(value.u ?? 0),
+      sensors: {
+        temperature: nullableNumber(sensor[0]),
+        humidity: nullableNumber(sensor[1]),
+        smoke: Number(sensor[2] ?? 0),
+        smokeAlarm: Boolean(sensor[3]),
+        light: Number(sensor[4] ?? 0),
+        lightPercent: Number(sensor[5] ?? 0),
+        lightTriggered: Boolean(sensor[6]),
+        distance: nullableNumber(sensor[7]),
+      },
+      enabled: { dht: Boolean(enabled & 1), mq2: Boolean(enabled & 2), light: Boolean(enabled & 4), distance: Boolean(enabled & 8) },
+      outputs: { led1: outputMode(value.o[0]), led2: outputMode(value.o[1]), buzzer: outputMode(value.o[2]) },
+      online: true,
+    };
   } catch {
     return null;
   }
@@ -546,7 +570,8 @@ export default function App() {
     if (!config.privateKey.trim() || topics.length === 0) return;
     setIsPolling(true);
     try {
-      const results = await Promise.all(
+      const [results, topicOverview] = await Promise.all([
+        Promise.all(
         topics.map(async (topic) => {
           const query = new URLSearchParams({
             uid: config.privateKey.trim(),
@@ -564,9 +589,24 @@ export default function App() {
             unix: Number(item.unix ?? 0),
           })) as ReceivedMessage[];
         }),
-      );
+        ),
+        fetch(`${TOPIC_API}?${new URLSearchParams({ openID: config.privateKey.trim(), type: "1" }).toString()}`, { cache: "no-store" })
+          .then((response) => response.json())
+          .then((body) => body?.code === 0 ? (body?.data?.data ?? body?.data ?? []) : [])
+          .catch(() => []),
+      ]);
 
-      const allMessages = results.flat();
+      const topicSet = new Set(topics);
+      const overviewMessages = (Array.isArray(topicOverview) ? topicOverview : [])
+        .filter((item: { topic?: string; msg?: string }) => item.topic && topicSet.has(item.topic) && typeof item.msg === "string" && item.msg.length > 0)
+        .map((item: { topic: string; msg: string; time?: string; unix?: number }) => ({
+          id: `${item.topic}-${item.unix ?? item.time ?? "latest"}-${item.msg}`,
+          topic: item.topic,
+          message: item.msg,
+          time: item.time ?? new Date().toLocaleString("zh-CN", { hour12: false }),
+          unix: Number(item.unix ?? 0),
+        })) as ReceivedMessage[];
+      const allMessages = [...results.flat(), ...overviewMessages];
       const latestTelemetry = allMessages
         .map((item) => ({ item, value: parseTelemetry(item.message) }))
         .filter((entry): entry is { item: ReceivedMessage; value: Telemetry } => entry.value !== null)
