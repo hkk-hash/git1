@@ -175,6 +175,20 @@ button:focus-visible, input:focus-visible, select:focus-visible {
 .output-strip b { padding: 6px 9px; border-radius: 6px; color: var(--muted); background: rgba(16,30,58,.06); font: 650 9px/1 var(--font-geist-mono), monospace; text-transform: uppercase; }
 .output-strip b.active { color: var(--cobalt); background: rgba(40,92,244,.09); }
 .output-strip small { margin-left: auto; color: var(--muted); font-size: 9px; }
+.oled-panel { margin-top: 12px; padding: 17px 18px 15px; border: 1px solid var(--line); border-radius: 12px; background: linear-gradient(135deg, rgba(40,92,244,.055), rgba(37,168,133,.035)); }
+.oled-panel-heading { display: flex; align-items: center; justify-content: space-between; gap: 14px; }
+.oled-panel-heading > div { display: flex; align-items: center; gap: 12px; }
+.oled-panel-heading span { color: var(--cobalt); font: 700 8px/1 var(--font-geist-mono), monospace; letter-spacing: .13em; }
+.oled-panel-heading strong { font-size: 13px; }
+.oled-panel-heading small { color: var(--muted); font-size: 9px; }
+.oled-page-buttons { margin-top: 14px; display: grid; grid-template-columns: repeat(5, minmax(0, 1fr)); gap: 7px; }
+.oled-page-buttons button { min-height: 38px; padding: 7px 8px; border: 1px solid rgba(16,30,58,.12); border-radius: 7px; color: var(--muted); background: rgba(255,255,255,.72); cursor: pointer; font-size: 10px; font-weight: 650; transition: .18s ease; }
+.oled-page-buttons button:hover { color: var(--cobalt); border-color: rgba(40,92,244,.36); transform: translateY(-1px); }
+.oled-page-buttons button.active { color: white; border-color: var(--cobalt); background: var(--cobalt); box-shadow: 0 7px 20px rgba(40,92,244,.18); }
+.oled-page-buttons button.auto { color: var(--violet); }
+.oled-page-buttons button.auto.active { color: white; border-color: var(--violet); background: var(--violet); }
+.oled-page-buttons button:disabled { opacity: .45; cursor: wait; transform: none; }
+.oled-panel > p { margin: 12px 0 0; color: var(--muted); font-size: 9px; line-height: 1.6; }
 .telemetry-diagnostic { margin-top: 10px; padding: 13px 15px; display: grid; grid-template-columns: auto 1fr; gap: 14px; align-items: center; border: 1px solid rgba(224,108,83,.22); border-radius: 9px; color: #74483e; background: rgba(224,108,83,.055); font-size: 10px; }
 .telemetry-diagnostic strong { white-space: nowrap; font-size: 11px; }
 .telemetry-diagnostic code { color: var(--coral); font-family: var(--font-geist-mono), monospace; }
@@ -419,6 +433,7 @@ footer p { letter-spacing: 0; }
   .settings-grid { grid-template-columns: 1fr 1fr; }
   .control-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
   .sensor-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .oled-page-buttons { grid-template-columns: repeat(3, minmax(0, 1fr)); }
   .chain-grid { grid-template-columns: 1fr; }
   .hero-stats { display: none; }
   .hero-grid { grid-template-columns: 1fr; }
@@ -441,6 +456,8 @@ footer p { letter-spacing: 0; }
   .sensor-grid { grid-template-columns: 1fr; }
   .output-strip { align-items: flex-start; flex-wrap: wrap; }
   .output-strip small { width: 100%; margin: 2px 0 0; }
+  .oled-panel-heading { align-items: flex-start; flex-direction: column; }
+  .oled-page-buttons { grid-template-columns: repeat(2, minmax(0, 1fr)); }
   .telemetry-diagnostic { grid-template-columns: 1fr; gap: 5px; }
   .control-grid { grid-template-columns: 1fr; }
   .control-card, .empty-card { min-height: 188px; }

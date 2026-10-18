@@ -85,13 +85,14 @@ type Telemetry = {
   };
   enabled: { dht: boolean; mq2: boolean; light: boolean; distance: boolean };
   outputs: { led1: "off" | "on" | "blink"; led2: "off" | "on" | "blink"; buzzer: "off" | "on" | "blink" };
+  oled: { page: number; auto: boolean };
   online: boolean;
 };
 
 type Toast = { text: string; type: "success" | "error" } | null;
 
 type DeviceCommand = {
-  group: "输出控制" | "传感器控制" | "系统指令" | "兼容指令";
+  group: "输出控制" | "传感器控制" | "OLED 显示" | "系统指令" | "兼容指令";
   command: string;
   description: string;
 };
@@ -121,6 +122,16 @@ const deviceCommands: DeviceCommand[] = [
   { group: "传感器控制", command: "sensor.light.off", description: "停用光敏传感器采集" },
   { group: "传感器控制", command: "sensor.distance.on", description: "启用超声波距离采集" },
   { group: "传感器控制", command: "sensor.distance.off", description: "停用超声波距离采集" },
+  { group: "OLED 显示", command: "oled.sensors", description: "切换到实时传感器页面" },
+  { group: "OLED 显示", command: "oled.weather", description: "切换到南京当前天气页面" },
+  { group: "OLED 显示", command: "oled.forecast", description: "切换到未来 3 天天气预报" },
+  { group: "OLED 显示", command: "oled.clock", description: "切换到日期时间页面" },
+  { group: "OLED 显示", command: "oled.calendar", description: "切换到公历 / 农历页面" },
+  { group: "OLED 显示", command: "oled.holiday", description: "切换到最近节日页面" },
+  { group: "OLED 显示", command: "oled.prev", description: "切换到上一页" },
+  { group: "OLED 显示", command: "oled.next", description: "切换到下一页" },
+  { group: "OLED 显示", command: "oled.auto", description: "每 8 秒自动轮播页面" },
+  { group: "OLED 显示", command: "oled.manual", description: "停止自动轮播，保留当前页" },
   { group: "系统指令", command: "get_state", description: "要求设备立即回传一次状态" },
   { group: "兼容指令", command: "get", description: "兼容旧版：立即回传一次状态" },
   { group: "兼容指令", command: "on", description: "兼容旧版：打开 LED 1" },
@@ -128,6 +139,15 @@ const deviceCommands: DeviceCommand[] = [
   { group: "兼容指令", command: "bar", description: "兼容旧版：打开蜂鸣器" },
   { group: "兼容指令", command: "baroff", description: "兼容旧版：关闭蜂鸣器" },
 ];
+
+const oledPages = [
+  { label: "传感器", command: "oled.sensors", page: 0 },
+  { label: "当前天气", command: "oled.weather", page: 1 },
+  { label: "3 日预报", command: "oled.forecast", page: 2 },
+  { label: "日期时间", command: "oled.clock", page: 3 },
+  { label: "阴阳历", command: "oled.calendar", page: 4 },
+  { label: "最近节日", command: "oled.holiday", page: 5 },
+] as const;
 
 const defaultConfig: BemfaConfig = {
   privateKey: "",
@@ -307,8 +327,10 @@ function conditionMatches(condition: ChainCondition, telemetry: Telemetry) {
 
 function parseTelemetry(message: string): Telemetry | null {
   try {
-    const value = JSON.parse(message) as Partial<Telemetry> & { t?: string; q?: number; u?: number; a?: unknown[]; e?: number; o?: number[] };
-    if (value.type === "telemetry" && value.sensors && value.enabled && value.outputs) return value as Telemetry;
+    const value = JSON.parse(message) as Partial<Telemetry> & { t?: string; q?: number; u?: number; a?: unknown[]; e?: number; o?: number[]; p?: number; x?: number };
+    if (value.type === "telemetry" && value.sensors && value.enabled && value.outputs) {
+      return { ...(value as Telemetry), oled: value.oled ?? { page: 0, auto: false } };
+    }
     if (value.t !== "s" || !Array.isArray(value.a) || value.a.length < 8 || !Array.isArray(value.o) || value.o.length < 3) return null;
     const sensor = value.a;
     const enabled = Number(value.e ?? 0);
@@ -331,6 +353,7 @@ function parseTelemetry(message: string): Telemetry | null {
       },
       enabled: { dht: Boolean(enabled & 1), mq2: Boolean(enabled & 2), light: Boolean(enabled & 4), distance: Boolean(enabled & 8) },
       outputs: { led1: outputMode(value.o[0]), led2: outputMode(value.o[1]), buzzer: outputMode(value.o[2]) },
+      oled: { page: Number(value.p ?? 0), auto: Boolean(value.x) },
       online: true,
     };
   } catch {
@@ -560,6 +583,34 @@ export default function App() {
       notify(`已发送“${command}”`);
     } catch (error) {
       notify(error instanceof Error ? error.message : "消息发送失败", "error");
+    } finally {
+      setSendingId(null);
+    }
+  };
+
+  const sendOledCommand = async (command: string, label: string, page?: number) => {
+    if (!validateConnection() || sendingId) return;
+    const commandId = `oled:${command}`;
+    setSendingId(commandId);
+    try {
+      await publish(command);
+      setTelemetry((current) => {
+        if (!current) return current;
+        let nextPage = current.oled.page;
+        if (typeof page === "number") nextPage = page;
+        if (command === "oled.next") nextPage = (nextPage + 1) % oledPages.length;
+        if (command === "oled.prev") nextPage = (nextPage + oledPages.length - 1) % oledPages.length;
+        return {
+          ...current,
+          oled: {
+            page: nextPage,
+            auto: command === "oled.auto" ? true : command === "oled.manual" ? false : command.startsWith("oled.") ? false : current.oled.auto,
+          },
+        };
+      });
+      notify(`OLED · 已切换${label}`);
+    } catch (error) {
+      notify(error instanceof Error ? error.message : "OLED 控制失败", "error");
     } finally {
       setSendingId(null);
     }
@@ -997,6 +1048,39 @@ export default function App() {
           {(["led1", "led2", "buzzer"] as const).map((output) => <b className={telemetry?.outputs[output] !== "off" ? "active" : ""} key={output}>{output.toUpperCase()} · {telemetry?.outputs[output] ?? "未知"}</b>)}
           <small>{telemetryReceivedAt ? `最近遥测 ${new Date(telemetryReceivedAt).toLocaleTimeString("zh-CN", { hour12: false })}` : "尚未收到 JSON 遥测"}</small>
         </div>
+        <div className="oled-panel">
+          <div className="oled-panel-heading">
+            <div>
+              <span>OLED DISPLAY</span>
+              <strong>屏幕页面控制</strong>
+            </div>
+            <small>{telemetry?.oled.auto ? "自动轮播中 · 每 8 秒" : `当前：${oledPages[telemetry?.oled.page ?? 0]?.label ?? "未知页面"}`}</small>
+          </div>
+          <div className="oled-page-buttons">
+            <button type="button" disabled={sendingId !== null} onClick={() => void sendOledCommand("oled.prev", "到上一页")}>← 上一页</button>
+            {oledPages.map((item) => (
+              <button
+                type="button"
+                key={item.command}
+                className={!telemetry?.oled.auto && telemetry?.oled.page === item.page ? "active" : ""}
+                disabled={sendingId !== null}
+                onClick={() => void sendOledCommand(item.command, `到“${item.label}”`, item.page)}
+              >
+                {item.label}
+              </button>
+            ))}
+            <button type="button" disabled={sendingId !== null} onClick={() => void sendOledCommand("oled.next", "到下一页")}>下一页 →</button>
+            <button
+              type="button"
+              className={telemetry?.oled.auto ? "active auto" : "auto"}
+              disabled={sendingId !== null}
+              onClick={() => void sendOledCommand(telemetry?.oled.auto ? "oled.manual" : "oled.auto", telemetry?.oled.auto ? "为手动模式" : "为自动轮播")}
+            >
+              {telemetry?.oled.auto ? "停止轮播" : "自动轮播"}
+            </button>
+          </div>
+          <p>天气由心知天气在 ESP32 端通过 HTTPS 获取；私钥不会发送到网页。OLED 采用英文短标签显示，避免 128×64 屏幕中文字库占用过大。</p>
+        </div>
         {!telemetry && lastSync !== "尚未同步" && (
           <div className="telemetry-diagnostic" role="status">
             <strong>云端暂时没有遥测数据</strong>
@@ -1190,7 +1274,7 @@ export default function App() {
             </div>
             <p className="command-modal-intro">这些指令与当前 ESP32-S3 固件一致，可直接发送，也可用于自定义按钮和动作链。</p>
             <div className="command-list">
-              {(["输出控制", "传感器控制", "系统指令", "兼容指令"] as DeviceCommand["group"][]).map((group) => (
+              {(["输出控制", "传感器控制", "OLED 显示", "系统指令", "兼容指令"] as DeviceCommand["group"][]).map((group) => (
                 <div className="command-group" key={group}>
                   <h3>{group}</h3>
                   {deviceCommands.filter((item) => item.group === group).map((item) => (
