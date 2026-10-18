@@ -238,6 +238,24 @@ button:focus-visible, input:focus-visible, select:focus-visible {
 .empty-card > span { width: 42px; height: 42px; border: 1px solid var(--line); border-radius: 50%; display: grid; place-items: center; font-size: 23px; font-weight: 300; background: rgba(255,255,255,.5); transition: .25s; }
 .empty-card strong { margin-top: 15px; color: var(--ink); font-size: 14px; }
 .empty-card small { margin-top: 6px; font-size: 11px; }
+
+.ble-keypad-panel { margin-top: 18px; padding: 24px; display: grid; grid-template-columns: minmax(0, 1fr) 260px; align-items: center; gap: 30px; border: 1px solid var(--line); border-radius: 16px; background: linear-gradient(135deg, rgba(40,92,244,.055), rgba(126,93,235,.045)); transition: border-color .25s, box-shadow .25s; }
+.ble-keypad-panel.connected { border-color: rgba(37,168,133,.28); box-shadow: inset 3px 0 0 var(--mint); }
+.ble-keypad-copy { max-width: 680px; }
+.ble-keypad-eyebrow { color: var(--violet); font: 700 9px/1 var(--font-geist-mono), monospace; letter-spacing: .14em; }
+.ble-keypad-copy h3 { margin: 10px 0 12px; font-size: 22px; letter-spacing: -.03em; }
+.ble-keypad-status { display: flex; align-items: center; gap: 8px; color: var(--muted); font-size: 11px; }
+.ble-keypad-status i { width: 8px; height: 8px; border-radius: 50%; background: #b7bbc1; box-shadow: 0 0 0 4px rgba(183,187,193,.15); }
+.connected .ble-keypad-status { color: var(--mint); }
+.connected .ble-keypad-status i { background: var(--mint); box-shadow: 0 0 0 4px rgba(37,168,133,.12); }
+.ble-keypad-copy p { max-width: 640px; margin: 16px 0 0; color: var(--muted); font-size: 10px; line-height: 1.7; }
+.ble-keypad-copy code { padding: 2px 5px; border-radius: 4px; color: var(--cobalt); background: rgba(40,92,244,.07); font-family: var(--font-geist-mono), monospace; }
+.ble-keypad-grid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 8px; }
+.ble-keypad-grid button { aspect-ratio: 1.16; border: 1px solid rgba(16,30,58,.12); border-radius: 10px; color: var(--ink); background: rgba(255,255,255,.82); font: 600 21px/1 var(--font-geist-mono), monospace; cursor: pointer; box-shadow: 0 3px 10px rgba(16,30,58,.045); transition: transform .15s, border-color .15s, color .15s, box-shadow .15s; }
+.ble-keypad-grid button:hover:not(:disabled) { color: var(--cobalt); border-color: rgba(40,92,244,.36); transform: translateY(-2px); box-shadow: 0 8px 18px rgba(40,92,244,.11); }
+.ble-keypad-grid button:active:not(:disabled) { transform: translateY(0) scale(.96); }
+.ble-keypad-grid button:disabled { color: #aeb2b8; background: rgba(235,236,237,.6); cursor: not-allowed; box-shadow: none; }
+.ble-keypad-grid button span { font-size: 14px; letter-spacing: .1em; }
 .empty-card:hover { border-color: var(--cobalt); color: var(--cobalt); background: rgba(40,92,244,.025); }
 .empty-card:hover > span { background: var(--cobalt); color: white; transform: rotate(90deg); }
 
@@ -439,6 +457,7 @@ footer p { letter-spacing: 0; }
 @media (max-width: 1000px) {
   .settings-grid { grid-template-columns: 1fr 1fr; }
   .control-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .ble-keypad-panel { grid-template-columns: minmax(0, 1fr) 230px; }
   .sensor-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
   .oled-page-buttons { grid-template-columns: repeat(3, minmax(0, 1fr)); }
   .chain-grid { grid-template-columns: 1fr; }
@@ -467,6 +486,8 @@ footer p { letter-spacing: 0; }
   .oled-page-buttons { grid-template-columns: repeat(2, minmax(0, 1fr)); }
   .telemetry-diagnostic { grid-template-columns: 1fr; gap: 5px; }
   .control-grid { grid-template-columns: 1fr; }
+  .ble-keypad-panel { grid-template-columns: 1fr; padding: 20px; }
+  .ble-keypad-grid { width: min(100%, 290px); margin: 0 auto; }
   .control-card, .empty-card { min-height: 188px; }
   .control-trigger { height: 137px; }
   .monitor-heading { padding: 16px 0; align-items: flex-start; }

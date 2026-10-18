@@ -88,13 +88,14 @@ type Telemetry = {
   enabled: { dht: boolean; mq2: boolean; light: boolean; distance: boolean };
   outputs: { led1: "off" | "on" | "blink"; led2: "off" | "on" | "blink"; buzzer: "off" | "on" | "blink" };
   oled: { page: number; auto: boolean };
+  keyboardConnected: boolean;
   online: boolean;
 };
 
 type Toast = { text: string; type: "success" | "error" } | null;
 
 type DeviceCommand = {
-  group: "输出控制" | "传感器控制" | "OLED 显示" | "系统指令" | "兼容指令";
+  group: "输出控制" | "传感器控制" | "OLED 显示" | "蓝牙键盘" | "系统指令" | "兼容指令";
   command: string;
   description: string;
 };
@@ -134,6 +135,15 @@ const deviceCommands: DeviceCommand[] = [
   { group: "OLED 显示", command: "oled.next", description: "切换到下一页" },
   { group: "OLED 显示", command: "oled.auto", description: "每 8 秒自动轮播页面" },
   { group: "OLED 显示", command: "oled.manual", description: "停止自动轮播，保留当前页" },
+  { group: "蓝牙键盘", command: "keyboard.1", description: "在已连接的电脑上输入数字 1" },
+  { group: "蓝牙键盘", command: "keyboard.2", description: "在已连接的电脑上输入数字 2" },
+  { group: "蓝牙键盘", command: "keyboard.3", description: "在已连接的电脑上输入数字 3" },
+  { group: "蓝牙键盘", command: "keyboard.4", description: "在已连接的电脑上输入数字 4" },
+  { group: "蓝牙键盘", command: "keyboard.5", description: "在已连接的电脑上输入数字 5" },
+  { group: "蓝牙键盘", command: "keyboard.6", description: "在已连接的电脑上输入数字 6" },
+  { group: "蓝牙键盘", command: "keyboard.7", description: "在已连接的电脑上输入数字 7" },
+  { group: "蓝牙键盘", command: "keyboard.8", description: "在已连接的电脑上输入数字 8" },
+  { group: "蓝牙键盘", command: "keyboard.9", description: "在已连接的电脑上输入数字 9" },
   { group: "系统指令", command: "get_state", description: "要求设备立即回传一次状态" },
   { group: "兼容指令", command: "get", description: "兼容旧版：立即回传一次状态" },
   { group: "兼容指令", command: "on", description: "兼容旧版：打开 LED 1" },
@@ -326,9 +336,13 @@ function conditionMatches(condition: ChainCondition, telemetry: Telemetry) {
 
 function parseTelemetry(message: string): Telemetry | null {
   try {
-    const value = JSON.parse(message) as Partial<Telemetry> & { t?: string; q?: number; u?: number; a?: unknown[]; e?: number; o?: number[]; p?: number; x?: number };
+    const value = JSON.parse(message) as Partial<Telemetry> & { t?: string; q?: number; u?: number; a?: unknown[]; e?: number; o?: number[]; p?: number; x?: number; b?: number };
     if (value.type === "telemetry" && value.sensors && value.enabled && value.outputs) {
-      return { ...(value as Telemetry), oled: value.oled ?? { page: 0, auto: false } };
+      return {
+        ...(value as Telemetry),
+        oled: value.oled ?? { page: 0, auto: false },
+        keyboardConnected: value.keyboardConnected ?? false,
+      };
     }
     if (value.t !== "s" || !Array.isArray(value.a) || value.a.length < 8 || !Array.isArray(value.o) || value.o.length < 3) return null;
     const sensor = value.a;
@@ -353,6 +367,7 @@ function parseTelemetry(message: string): Telemetry | null {
       enabled: { dht: Boolean(enabled & 1), mq2: Boolean(enabled & 2), light: Boolean(enabled & 4), distance: Boolean(enabled & 8) },
       outputs: { led1: outputMode(value.o[0]), led2: outputMode(value.o[1]), buzzer: outputMode(value.o[2]) },
       oled: { page: Number(value.p ?? 0), auto: Boolean(value.x) },
+      keyboardConnected: Boolean(value.b),
       online: true,
     };
   } catch {
@@ -632,6 +647,24 @@ export default function App() {
       notify(`OLED · 已切换${label}`);
     } catch (error) {
       notify(error instanceof Error ? error.message : "OLED 控制失败", "error");
+    } finally {
+      setSendingId(null);
+    }
+  };
+
+  const sendKeyboardDigit = async (digit: number) => {
+    if (!validateConnection() || sendingId) return;
+    if (!telemetry?.keyboardConnected) {
+      notify("请先在电脑蓝牙设置中连接 ESP32 Web Keypad", "error");
+      return;
+    }
+    const commandId = `keyboard:${digit}`;
+    setSendingId(commandId);
+    try {
+      await publish(`keyboard.${digit}`);
+      notify(`蓝牙键盘 · 已输入 ${digit}`);
+    } catch (error) {
+      notify(error instanceof Error ? error.message : "蓝牙键盘命令发送失败", "error");
     } finally {
       setSendingId(null);
     }
@@ -1161,6 +1194,31 @@ export default function App() {
             <span>＋</span><strong>添加控制</strong><small>普通按钮或开关按钮</small>
           </button>
         </div>
+
+        <div className={`ble-keypad-panel ${telemetry?.keyboardConnected ? "connected" : ""}`}>
+          <div className="ble-keypad-copy">
+            <span className="ble-keypad-eyebrow">BLUETOOTH HID</span>
+            <h3>电脑数字键盘</h3>
+            <div className="ble-keypad-status">
+              <i />
+              <strong>{telemetry?.keyboardConnected ? "已连接电脑" : "等待电脑连接"}</strong>
+            </div>
+            <p>先在电脑蓝牙设置中配对 <code>ESP32 Web Keypad</code>，如提示请输入配对码 <code>123456</code>。随后在电脑中选中任意输入框，点击右侧数字即可输入。</p>
+          </div>
+          <div className="ble-keypad-grid" aria-label="蓝牙数字键盘">
+            {[1, 2, 3, 4, 5, 6, 7, 8, 9].map((digit) => (
+              <button
+                type="button"
+                key={digit}
+                disabled={!telemetry?.keyboardConnected || sendingId !== null}
+                onClick={() => void sendKeyboardDigit(digit)}
+                aria-label={`通过蓝牙键盘输入 ${digit}`}
+              >
+                {sendingId === `keyboard:${digit}` ? <span>···</span> : digit}
+              </button>
+            ))}
+          </div>
+        </div>
       </section>
 
       <section className="chains-section">
@@ -1300,7 +1358,7 @@ export default function App() {
             </div>
             <p className="command-modal-intro">这些指令与当前 ESP32-S3 固件一致，可直接发送，也可用于自定义按钮和动作链。</p>
             <div className="command-list">
-              {(["输出控制", "传感器控制", "OLED 显示", "系统指令", "兼容指令"] as DeviceCommand["group"][]).map((group) => (
+              {(["输出控制", "传感器控制", "OLED 显示", "蓝牙键盘", "系统指令", "兼容指令"] as DeviceCommand["group"][]).map((group) => (
                 <div className="command-group" key={group}>
                   <h3>{group}</h3>
                   {deviceCommands.filter((item) => item.group === group).map((item) => (
