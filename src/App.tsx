@@ -31,6 +31,7 @@ type ChainAction = {
   delayUnit: DelayUnit;
   clockTime: string;
   message: string;
+  condition: ChainCondition | null;
 };
 
 type ActionChain = {
@@ -39,6 +40,7 @@ type ActionChain = {
   source: "default" | "user";
   enabled: boolean;
   cooldownSeconds: number;
+  scheduleTime: string | null;
   conditions: ChainCondition[];
   actions: ChainAction[];
 };
@@ -227,6 +229,7 @@ function createAction(): ChainAction {
     delayUnit: "seconds",
     clockTime: "08:00",
     message: "on",
+    condition: null,
   };
 }
 
@@ -240,35 +243,20 @@ const metricLabels: Record<SensorMetric, string> = {
   smoke: "烟雾模拟值",
   smokeAlarm: "烟雾报警",
   light: "光敏模拟值",
-  lightTriggered: "光敏已触发",
+  lightTriggered: "检测到黑暗环境",
   distance: "超声距离 (cm)",
 };
 
 const defaultChains: ActionChain[] = [
   {
-    id: "default-distance-alarm",
-    name: "近距离蜂鸣预警",
-    source: "default",
-    enabled: true,
-    cooldownSeconds: 10,
-    conditions: [{ id: "default-distance-condition", metric: "distance", operator: "<", value: 10 }],
-    actions: [{ ...createAction(), id: "default-distance-action", delayValue: 0, message: "buzzer.on" }],
-  },
-  {
-    id: "default-dark-distance-chain",
-    name: "近距 + 光照联动",
+    id: "default-dark-led1",
+    name: "黑暗环境点亮 LED1",
     source: "default",
     enabled: true,
     cooldownSeconds: 30,
-    conditions: [
-      { id: "default-near-condition", metric: "distance", operator: "<", value: 8 },
-      { id: "default-light-condition", metric: "lightTriggered", operator: "==", value: 1 },
-    ],
-    actions: [
-      { ...createAction(), id: "default-led-blink", delayValue: 0, message: "led1.blink:500" },
-      { ...createAction(), id: "default-led-stop", delayValue: 8, message: "led1.off" },
-      { ...createAction(), id: "default-buzzer-blink", delayValue: 0, message: "buzzer.blink:500" },
-    ],
+    scheduleTime: null,
+    conditions: [{ id: "default-dark-condition", metric: "lightTriggered", operator: "==", value: 1 }],
+    actions: [{ ...createAction(), id: "default-dark-led1-action", delayValue: 0, message: "led1.on" }],
   },
 ];
 
@@ -279,9 +267,20 @@ function createChain(): ActionChain {
     source: "user",
     enabled: true,
     cooldownSeconds: 30,
+    scheduleTime: null,
     conditions: [createCondition()],
     actions: [{ ...createAction(), delayValue: 0 }],
   };
+}
+
+function localClockMinute(timestamp: number) {
+  const date = new Date(timestamp);
+  return `${String(date.getHours()).padStart(2, "0")}:${String(date.getMinutes()).padStart(2, "0")}`;
+}
+
+function localDateKey(timestamp: number) {
+  const date = new Date(timestamp);
+  return `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, "0")}-${String(date.getDate()).padStart(2, "0")}`;
 }
 
 function actionDueAt(action: ChainAction, from: number) {
@@ -404,13 +403,14 @@ export default function App() {
   const [lastSync, setLastSync] = useState<string>("尚未同步");
   const [telemetry, setTelemetry] = useState<Telemetry | null>(null);
   const [telemetryReceivedAt, setTelemetryReceivedAt] = useState(0);
-  const [sensorSending, setSensorSending] = useState<string | null>(null);
   const [now, setNow] = useState(() => Date.now());
   const knownMessages = useRef(new Set<string>());
   const lastTelemetrySequence = useRef<number | null>(null);
+  const telemetryRef = useRef<Telemetry | null>(null);
   const executingChains = useRef(new Set<string>());
   const ruleLatch = useRef<Record<string, boolean>>({});
   const lastRuleRun = useRef<Record<string, number>>({});
+  const lastScheduleRunDay = useRef<Record<string, string>>({});
   const toastTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   useEffect(() => {
@@ -429,7 +429,11 @@ export default function App() {
           ...createChain(),
           ...chain,
           source: "user" as const,
+          scheduleTime: chain.scheduleTime ?? null,
           conditions: chain.conditions?.length ? chain.conditions : [createCondition()],
+          actions: chain.actions?.length
+            ? chain.actions.map((action) => ({ ...createAction(), ...action, condition: action.condition ?? null }))
+            : [{ ...createAction(), delayValue: 0 }],
         }));
         setChains([...defaultChains, ...userChains]);
       }
@@ -455,6 +459,10 @@ export default function App() {
     const timer = setInterval(() => setNow(Date.now()), 1000);
     return () => clearInterval(timer);
   }, []);
+
+  useEffect(() => {
+    telemetryRef.current = telemetry;
+  }, [telemetry]);
 
   useEffect(() => {
     return () => {
@@ -508,6 +516,36 @@ export default function App() {
         const action = chain?.actions[run.currentIndex];
         if (!chain || !action) return;
 
+        const advance = () => {
+          const nextIndex = run.currentIndex + 1;
+          setChainRuns((current) => {
+            const latest = current[chainId];
+            if (latest?.token !== run.token) return current;
+            if (nextIndex >= chain.actions.length) {
+              return { ...current, [chainId]: { ...latest, status: "completed", currentIndex: nextIndex, nextAt: null, remainingMs: null } };
+            }
+            return {
+              ...current,
+              [chainId]: {
+                ...latest,
+                status: "waiting",
+                currentIndex: nextIndex,
+                nextAt: actionDueAt(chain.actions[nextIndex], Date.now()),
+                remainingMs: null,
+              },
+            };
+          });
+          if (nextIndex >= chain.actions.length) notify(`${chain.name} · 动作链执行完成`);
+        };
+
+        if (action.condition) {
+          const liveTelemetry = telemetryRef.current;
+          if (!liveTelemetry || !conditionMatches(action.condition, liveTelemetry)) {
+            advance();
+            return;
+          }
+        }
+
         executingChains.current.add(chainId);
         setChainRuns((current) => {
           if (current[chainId]?.token !== run.token) return current;
@@ -516,24 +554,7 @@ export default function App() {
 
         void publish(action.message)
           .then(() => {
-            const nextIndex = run.currentIndex + 1;
-            setChainRuns((current) => {
-              if (current[chainId]?.token !== run.token) return current;
-              if (nextIndex >= chain.actions.length) {
-                return { ...current, [chainId]: { ...run, status: "completed", currentIndex: nextIndex, nextAt: null, remainingMs: null } };
-              }
-              return {
-                ...current,
-                [chainId]: {
-                  ...run,
-                  status: "waiting",
-                  currentIndex: nextIndex,
-                  nextAt: actionDueAt(chain.actions[nextIndex], Date.now()),
-                  remainingMs: null,
-                },
-              };
-            });
-            if (nextIndex >= chain.actions.length) notify(`${chain.name} · 动作链执行完成`);
+            advance();
           })
           .catch((error) => {
             const message = error instanceof Error ? error.message : "消息发送失败";
@@ -725,21 +746,6 @@ export default function App() {
     notify("已开始接收主题消息");
   };
 
-  const setSensorEnabled = async (sensor: keyof Telemetry["enabled"]) => {
-    if (!validateConnection() || !telemetry || sensorSending) return;
-    const next = !telemetry.enabled[sensor];
-    setSensorSending(sensor);
-    try {
-      await publish(`sensor.${sensor}.${next ? "on" : "off"}`);
-      setTelemetry({ ...telemetry, enabled: { ...telemetry.enabled, [sensor]: next } });
-      notify(`${sensor.toUpperCase()} · 已${next ? "启用" : "停用"}`);
-    } catch (error) {
-      notify(error instanceof Error ? error.message : "传感器控制失败", "error");
-    } finally {
-      setSensorSending(null);
-    }
-  };
-
   const saveButton = (event: FormEvent<HTMLFormElement>) => {
     event.preventDefault();
     if (!editingButton) return;
@@ -773,6 +779,9 @@ export default function App() {
     if (!editingChain.name.trim()) return notify("动作链名称不能为空", "error");
     if (editingChain.conditions.length === 0) return notify("请至少添加一个触发条件", "error");
     if (editingChain.actions.length === 0) return notify("请至少添加一个动作", "error");
+    if (editingChain.scheduleTime !== null && !/^([01]\d|2[0-3]):[0-5]\d$/.test(editingChain.scheduleTime)) {
+      return notify("请选择有效的每日触发时刻", "error");
+    }
     for (const action of editingChain.actions) {
       if (!action.message.trim()) return notify("每个动作都需要填写发送消息", "error");
       if (action.timing === "delay" && (!Number.isFinite(action.delayValue) || action.delayValue < 0)) {
@@ -850,15 +859,20 @@ export default function App() {
   useEffect(() => {
     if (!telemetry || !isListening) return;
     const currentTime = Date.now();
+    const clockMinute = localClockMinute(currentTime);
+    const dateKey = localDateKey(currentTime);
     chains.forEach((chain) => {
       if (!chain.enabled || chain.conditions.length === 0) return;
-      const matches = chain.conditions.every((condition) => conditionMatches(condition, telemetry));
+      const scheduleMatches = chain.scheduleTime === null ||
+        (chain.scheduleTime === clockMinute && lastScheduleRunDay.current[chain.id] !== dateKey);
+      const matches = scheduleMatches && chain.conditions.every((condition) => conditionMatches(condition, telemetry));
       const wasMatching = ruleLatch.current[chain.id] ?? false;
       ruleLatch.current[chain.id] = matches;
       const active = ["waiting", "sending", "paused"].includes(chainRuns[chain.id]?.status ?? "");
       const cooledDown = currentTime - (lastRuleRun.current[chain.id] ?? 0) >= chain.cooldownSeconds * 1000;
       if (matches && !wasMatching && !active && cooledDown) {
         lastRuleRun.current[chain.id] = currentTime;
+        if (chain.scheduleTime !== null) lastScheduleRunDay.current[chain.id] = dateKey;
         startChain(chain, true);
       }
     });
@@ -898,7 +912,14 @@ export default function App() {
   const editChain = (chain: ActionChain) => {
     if (chain.source === "default") return;
     resetChain(chain, true);
-    setEditingChain({ ...chain, actions: chain.actions.map((action) => ({ ...action })) });
+    setEditingChain({
+      ...chain,
+      conditions: chain.conditions.map((condition) => ({ ...condition })),
+      actions: chain.actions.map((action) => ({
+        ...action,
+        condition: action.condition ? { ...action.condition } : null,
+      })),
+    });
   };
 
   const duplicateChain = (chain: ActionChain) => {
@@ -908,7 +929,11 @@ export default function App() {
       name: `${chain.name}（副本）`,
       source: "user",
       conditions: chain.conditions.map((condition) => ({ ...condition, id: makeId() })),
-      actions: chain.actions.map((action) => ({ ...action, id: makeId() })),
+      actions: chain.actions.map((action) => ({
+        ...action,
+        id: makeId(),
+        condition: action.condition ? { ...action.condition, id: makeId() } : null,
+      })),
     });
   };
 
@@ -1023,22 +1048,22 @@ export default function App() {
         </div>
         <div className="sensor-grid">
           <article className={`sensor-card ${telemetry?.enabled.dht ? "enabled" : "disabled"}`}>
-            <div className="sensor-card-head"><span>DHT11</span><button type="button" disabled={!telemetry || sensorSending !== null} onClick={() => void setSensorEnabled("dht")}>{telemetry?.enabled.dht ? "停用" : "启用"}</button></div>
+            <div className="sensor-card-head"><span>DHT11</span><span className="sensor-readonly">只读</span></div>
             <div className="sensor-values"><strong>{telemetry?.sensors.temperature ?? "--"}<small> °C</small></strong><strong>{telemetry?.sensors.humidity ?? "--"}<small> %RH</small></strong></div>
             <p>{!telemetry ? "等待遥测" : telemetry.enabled.dht ? "温湿度采集中" : "采集已停用"}</p>
           </article>
           <article className={`sensor-card ${telemetry?.enabled.mq2 ? "enabled" : "disabled"} ${telemetry?.sensors.smokeAlarm ? "alarm" : ""}`}>
-            <div className="sensor-card-head"><span>MQ-2</span><button type="button" disabled={!telemetry || sensorSending !== null} onClick={() => void setSensorEnabled("mq2")}>{telemetry?.enabled.mq2 ? "停用" : "启用"}</button></div>
+            <div className="sensor-card-head"><span>MQ-2</span><span className="sensor-readonly">只读</span></div>
             <div className="sensor-values"><strong>{telemetry?.sensors.smoke ?? "--"}<small> RAW</small></strong><span className={`sensor-badge ${telemetry?.sensors.smokeAlarm ? "danger" : ""}`}>{telemetry?.sensors.smokeAlarm ? "报警" : "正常"}</span></div>
             <p>{!telemetry ? "等待遥测" : telemetry.enabled.mq2 ? "数字报警低电平触发" : "采集已停用"}</p>
           </article>
           <article className={`sensor-card ${telemetry?.enabled.light ? "enabled" : "disabled"}`}>
-            <div className="sensor-card-head"><span>光敏传感器</span><button type="button" disabled={!telemetry || sensorSending !== null} onClick={() => void setSensorEnabled("light")}>{telemetry?.enabled.light ? "停用" : "启用"}</button></div>
+            <div className="sensor-card-head"><span>光敏传感器</span><span className="sensor-readonly">只读</span></div>
             <div className="sensor-values"><strong>{telemetry?.sensors.light ?? "--"}<small> RAW</small></strong><strong>{telemetry?.sensors.lightPercent?.toFixed(0) ?? "--"}<small> %</small></strong></div>
-            <p>{!telemetry ? "等待遥测" : telemetry.sensors.lightTriggered ? "已达到固件触发阈值" : telemetry.enabled.light ? "未触发" : "采集已停用"}</p>
+            <p>{!telemetry ? "等待遥测" : telemetry.sensors.lightTriggered ? "检测到黑暗环境" : telemetry.enabled.light ? "当前环境明亮" : "采集已停用"}</p>
           </article>
           <article className={`sensor-card ${telemetry?.enabled.distance ? "enabled" : "disabled"}`}>
-            <div className="sensor-card-head"><span>HC-SR04</span><button type="button" disabled={!telemetry || sensorSending !== null} onClick={() => void setSensorEnabled("distance")}>{telemetry?.enabled.distance ? "停用" : "启用"}</button></div>
+            <div className="sensor-card-head"><span>HC-SR04</span><span className="sensor-readonly">只读</span></div>
             <div className="sensor-values"><strong>{telemetry?.sensors.distance ?? "--"}<small> cm</small></strong></div>
             <p>{!telemetry ? "等待遥测" : telemetry.sensors.distance === null ? "超出量程或等待回波" : telemetry.enabled.distance ? "距离实时测量" : "采集已停用"}</p>
           </article>
@@ -1180,7 +1205,7 @@ export default function App() {
                     </div>
                   </div>
                   <div className="chain-title-row">
-                    <div><h3>{chain.name}</h3><p>{chain.conditions.length} 个 AND 条件 · {chain.actions.length} 个动作 · 冷却 {chain.cooldownSeconds} 秒</p></div>
+                    <div><h3>{chain.name}</h3><p>{chain.scheduleTime ? `每天 ${chain.scheduleTime} · ` : ""}{chain.conditions.length} 个 AND 条件 · {chain.actions.length} 个动作 · 冷却 {chain.cooldownSeconds} 秒</p></div>
                     <span className={`chain-state ${isActive ? "active" : ""}`}>
                       {run?.status === "waiting" ? "等待中" : run?.status === "sending" ? "发送中" : run?.status === "paused" ? "已暂停" : run?.status === "completed" ? "已完成" : run?.status === "error" ? "执行失败" : "未启动"}
                     </span>
@@ -1188,6 +1213,7 @@ export default function App() {
 
                   <div className="condition-summary">
                     <span>当</span>
+                    {chain.scheduleTime ? <code>每天 {chain.scheduleTime}</code> : null}
                     {chain.conditions.map((condition, conditionIndex) => <code key={condition.id}>{conditionIndex > 0 ? "且 " : ""}{conditionLabel(condition)}</code>)}
                   </div>
 
@@ -1195,7 +1221,7 @@ export default function App() {
                     {chain.actions.map((action, actionIndex) => (
                       <li className={run && actionIndex === run.currentIndex && isActive ? "current" : run && actionIndex < run.currentIndex ? "done" : ""} key={action.id}>
                         <span className="action-node">{run && actionIndex < run.currentIndex ? "✓" : actionIndex + 1}</span>
-                        <span><small>{actionTimingLabel(action)}</small><code>{action.message}</code></span>
+                        <span><small>{actionTimingLabel(action)}{action.condition ? ` · 仅当 ${conditionLabel(action.condition)}` : ""}</small><code>{action.message}</code></span>
                       </li>
                     ))}
                   </ol>
@@ -1207,7 +1233,7 @@ export default function App() {
                     {run?.status === "sending" && currentAction ? <><span>正在发送</span><strong>“{currentAction.message}”</strong></> : null}
                     {run?.status === "completed" ? <><span>运行结果</span><strong>全部动作执行完成</strong></> : null}
                     {run?.status === "error" ? <><span>运行结果</span><strong>{run.error}</strong></> : null}
-                    {!run ? <><span>触发状态</span><strong>{chain.enabled ? "等待条件满足" : "规则已停用"}</strong></> : null}
+                    {!run ? <><span>触发状态</span><strong>{chain.enabled ? (chain.scheduleTime ? `等待每天 ${chain.scheduleTime} 且条件满足` : "等待条件满足") : "规则已停用"}</strong></> : null}
                   </div>
                   <div className="chain-card-actions">
                     {!isActive || run?.status === "completed" || run?.status === "error" ? (
@@ -1369,6 +1395,23 @@ export default function App() {
               <label className="rule-enable"><input type="checkbox" checked={editingChain.enabled} onChange={(event) => setEditingChain({ ...editingChain, enabled: event.target.checked })} /><span>保存后立即启用</span></label>
             </div>
 
+            <div className="chain-schedule">
+              <label className="rule-enable">
+                <input
+                  type="checkbox"
+                  checked={editingChain.scheduleTime !== null}
+                  onChange={(event) => setEditingChain({ ...editingChain, scheduleTime: event.target.checked ? "08:00" : null })}
+                />
+                <span>每天定时触发</span>
+              </label>
+              {editingChain.scheduleTime !== null ? (
+                <label className="field">
+                  <span>触发时刻</span>
+                  <input type="time" value={editingChain.scheduleTime} onChange={(event) => setEditingChain({ ...editingChain, scheduleTime: event.target.value })} />
+                </label>
+              ) : <small>关闭时仅由下方传感器条件触发</small>}
+            </div>
+
             <div className="chain-editor-heading">
               <div><strong>触发条件</strong><small>所有条件同时满足（AND）时触发</small></div>
               <span>{editingChain.conditions.length} CONDITIONS</span>
@@ -1443,6 +1486,41 @@ export default function App() {
                       <span>发送消息</span>
                       <input value={action.message} onChange={(event) => updateEditingAction(action.id, { message: event.target.value })} placeholder="例如：led1.blink:500" list="command-options" />
                     </label>
+                  </div>
+                  <div className="action-condition-block">
+                    <label className="rule-enable">
+                      <input
+                        type="checkbox"
+                        checked={action.condition !== null}
+                        onChange={(event) => updateEditingAction(action.id, { condition: event.target.checked ? createCondition() : null })}
+                      />
+                      <span>执行这个动作前再次判断传感器条件</span>
+                    </label>
+                    {action.condition ? (
+                      <div className="condition-editor action-condition-editor">
+                        <b>若</b>
+                        <select value={action.condition.metric} onChange={(event) => {
+                          const metric = event.target.value as SensorMetric;
+                          updateEditingAction(action.id, {
+                            condition: {
+                              ...action.condition!,
+                              metric,
+                              value: metric === "smokeAlarm" || metric === "lightTriggered" ? 1 : action.condition!.value,
+                            },
+                          });
+                        }}>
+                          {(Object.keys(metricLabels) as SensorMetric[]).map((metric) => <option value={metric} key={metric}>{metricLabels[metric]}</option>)}
+                        </select>
+                        <select value={action.condition.operator} onChange={(event) => updateEditingAction(action.id, { condition: { ...action.condition!, operator: event.target.value as ConditionOperator } })}>
+                          <option value="<">小于</option><option value="<=">小于等于</option><option value=">">大于</option><option value=">=">大于等于</option><option value="==">等于</option><option value="!=">不等于</option>
+                        </select>
+                        {action.condition.metric === "smokeAlarm" || action.condition.metric === "lightTriggered" ? (
+                          <select value={action.condition.value} onChange={(event) => updateEditingAction(action.id, { condition: { ...action.condition!, value: Number(event.target.value) } })}><option value={1}>是</option><option value={0}>否</option></select>
+                        ) : (
+                          <input type="number" step="0.1" value={action.condition.value} onChange={(event) => updateEditingAction(action.id, { condition: { ...action.condition!, value: Number(event.target.value) } })} />
+                        )}
+                      </div>
+                    ) : null}
                   </div>
                 </div>
               ))}

@@ -164,6 +164,7 @@ button:focus-visible, input:focus-visible, select:focus-visible {
 .sensor-card-head { display: flex; align-items: center; justify-content: space-between; color: var(--muted); font: 700 9px/1 var(--font-geist-mono), monospace; letter-spacing: .1em; }
 .sensor-card-head button { min-width: 45px; height: 27px; padding: 0 9px; border: 1px solid var(--line); border-radius: 99px; color: var(--cobalt); background: transparent; cursor: pointer; font-size: 9px; letter-spacing: 0; }
 .sensor-card-head button:disabled { opacity: .35; cursor: wait; }
+.sensor-readonly { padding: 5px 8px; border: 1px solid var(--line); border-radius: 99px; color: var(--muted); background: rgba(22,31,43,.025); font-size: 8px; letter-spacing: .08em; }
 .sensor-values { min-height: 70px; display: flex; align-items: flex-end; gap: 18px; }
 .sensor-values strong { font: 500 31px/1 var(--font-geist-mono), monospace; letter-spacing: -.05em; }
 .sensor-values strong small { color: var(--muted); font-size: 10px; letter-spacing: 0; }
@@ -388,6 +389,9 @@ footer p { letter-spacing: 0; }
 .suffix-input i { position: absolute; right: 14px; top: 18px; color: var(--muted); font: normal 10px/1 var(--font-geist-sans), sans-serif; }
 .rule-enable { height: 48px; margin-top: 3px; display: flex; align-items: center; gap: 9px; color: var(--muted); font-size: 11px; cursor: pointer; }
 .rule-enable input { accent-color: var(--cobalt); }
+.chain-schedule { margin: 2px 0 20px; padding: 11px 13px; border: 1px solid var(--line); border-radius: 9px; display: grid; grid-template-columns: minmax(150px,.7fr) minmax(180px,1.3fr); align-items: center; gap: 12px; background: rgba(40,92,244,.025); }
+.chain-schedule .rule-enable, .chain-schedule .field { margin: 0; }
+.chain-schedule > small { color: var(--muted); font-size: 10px; }
 .chain-editor-heading { margin: 4px 0 11px; display: flex; align-items: end; justify-content: space-between; }
 .chain-editor-heading > div { display: grid; gap: 3px; }
 .chain-editor-heading strong { font-size: 12px; letter-spacing: .06em; }
@@ -414,6 +418,9 @@ footer p { letter-spacing: 0; }
 .timing-tabs label span { font-size: 14px; }
 .action-editor-fields { display: grid; grid-template-columns: .8fr 1.2fr; gap: 10px; padding: 12px 14px 15px; }
 .action-editor-fields .field { margin: 0; }
+.action-condition-block { padding: 0 14px 14px; }
+.action-condition-block .rule-enable { height: auto; margin: 0 0 10px; }
+.action-condition-editor { grid-template-columns: 28px 1.4fr .9fr .75fr; }
 .timing-field > div { display: grid; grid-template-columns: 1fr 96px; }
 .timing-field > div input { border-radius: 8px 0 0 8px; }
 .timing-field > div select { height: 48px; border: 1px solid var(--line); border-left: 0; border-radius: 0 8px 8px 0; padding: 0 10px; }
@@ -484,9 +491,11 @@ footer p { letter-spacing: 0; }
   .kind-picker, .dual-fields { grid-template-columns: 1fr; }
   .action-editor-fields { grid-template-columns: 1fr; }
   .rule-meta-fields { grid-template-columns: 1fr; gap: 0; }
+  .chain-schedule { grid-template-columns: 1fr; }
   .condition-editor { grid-template-columns: 28px 1fr 1fr; }
   .condition-editor input, .condition-editor select:nth-of-type(2) { grid-column: 2 / 3; }
   .condition-editor button { grid-column: 3; grid-row: 2; }
+  .action-condition-editor { grid-template-columns: 28px 1fr 1fr; }
   .timing-tabs { display: grid; grid-template-columns: 1fr 1fr; }
   .timing-tabs label { justify-content: center; }
   .append-action { grid-template-columns: 28px 1fr; }
