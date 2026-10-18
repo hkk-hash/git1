@@ -90,10 +90,43 @@ type Telemetry = {
 
 type Toast = { text: string; type: "success" | "error" } | null;
 
+type DeviceCommand = {
+  group: "输出控制" | "传感器控制" | "系统指令" | "兼容指令";
+  command: string;
+  description: string;
+};
+
 const API_BASE = "https://apis.bemfa.com/va";
 const CONFIG_KEY = "bemfa-console-config-v1";
 const BUTTONS_KEY = "bemfa-console-buttons-v1";
 const CHAINS_KEY = "bemfa-console-automation-v2";
+
+const deviceCommands: DeviceCommand[] = [
+  { group: "输出控制", command: "led1.on", description: "打开 LED 1" },
+  { group: "输出控制", command: "led1.off", description: "关闭 LED 1" },
+  { group: "输出控制", command: "led1.blink:500", description: "LED 1 每 500 ms 闪烁" },
+  { group: "输出控制", command: "led2.on", description: "打开 LED 2" },
+  { group: "输出控制", command: "led2.off", description: "关闭 LED 2" },
+  { group: "输出控制", command: "led2.blink:500", description: "LED 2 每 500 ms 闪烁" },
+  { group: "输出控制", command: "buzzer.on", description: "蜂鸣器持续鸣响" },
+  { group: "输出控制", command: "buzzer.off", description: "关闭蜂鸣器" },
+  { group: "输出控制", command: "buzzer.blink:500", description: "蜂鸣器每 500 ms 间歇鸣响" },
+  { group: "输出控制", command: "all.off", description: "关闭 LED 1、LED 2 和蜂鸣器" },
+  { group: "传感器控制", command: "sensor.dht.on", description: "启用 DHT11 采集" },
+  { group: "传感器控制", command: "sensor.dht.off", description: "停用 DHT11 采集" },
+  { group: "传感器控制", command: "sensor.mq2.on", description: "启用 MQ-2 采集" },
+  { group: "传感器控制", command: "sensor.mq2.off", description: "停用 MQ-2 采集" },
+  { group: "传感器控制", command: "sensor.light.on", description: "启用光敏传感器采集" },
+  { group: "传感器控制", command: "sensor.light.off", description: "停用光敏传感器采集" },
+  { group: "传感器控制", command: "sensor.distance.on", description: "启用超声波距离采集" },
+  { group: "传感器控制", command: "sensor.distance.off", description: "停用超声波距离采集" },
+  { group: "系统指令", command: "get_state", description: "要求设备立即回传一次状态" },
+  { group: "兼容指令", command: "get", description: "兼容旧版：立即回传一次状态" },
+  { group: "兼容指令", command: "on", description: "兼容旧版：打开 LED 1" },
+  { group: "兼容指令", command: "off", description: "兼容旧版：关闭 LED 1" },
+  { group: "兼容指令", command: "bar", description: "兼容旧版：打开蜂鸣器" },
+  { group: "兼容指令", command: "baroff", description: "兼容旧版：关闭蜂鸣器" },
+];
 
 const defaultConfig: BemfaConfig = {
   privateKey: "",
@@ -312,6 +345,7 @@ export default function App() {
   const [toggleStates, setToggleStates] = useState<Record<string, boolean>>({});
   const [editingButton, setEditingButton] = useState<ControlButton | null>(null);
   const [editingChain, setEditingChain] = useState<ActionChain | null>(null);
+  const [commandsOpen, setCommandsOpen] = useState(false);
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [keyVisible, setKeyVisible] = useState(false);
   const [sendingId, setSendingId] = useState<string | null>(null);
@@ -486,6 +520,20 @@ export default function App() {
         setToggleStates((current) => ({ ...current, [button.id]: nextState }));
       }
       notify(`${button.name} · 已发送 “${message}”`);
+    } catch (error) {
+      notify(error instanceof Error ? error.message : "消息发送失败", "error");
+    } finally {
+      setSendingId(null);
+    }
+  };
+
+  const sendCatalogCommand = async (command: string) => {
+    if (!validateConnection() || sendingId) return;
+    const commandId = `command:${command}`;
+    setSendingId(commandId);
+    try {
+      await publish(command);
+      notify(`已发送“${command}”`);
     } catch (error) {
       notify(error instanceof Error ? error.message : "消息发送失败", "error");
     } finally {
@@ -909,14 +957,23 @@ export default function App() {
           {(["led1", "led2", "buzzer"] as const).map((output) => <b className={telemetry?.outputs[output] !== "off" ? "active" : ""} key={output}>{output.toUpperCase()} · {telemetry?.outputs[output] ?? "未知"}</b>)}
           <small>{telemetryReceivedAt ? `最近遥测 ${new Date(telemetryReceivedAt).toLocaleTimeString("zh-CN", { hour12: false })}` : "尚未收到 JSON 遥测"}</small>
         </div>
+        {!telemetry && lastSync !== "尚未同步" && (
+          <div className="telemetry-diagnostic" role="status">
+            <strong>云端暂时没有遥测数据</strong>
+            <span>请确认 ESP32 已刷入本项目固件、Wi-Fi 与巴法云已连接，并将 JSON 状态发布到 <code>{config.publishTopic.trim() || "基础主题"}/up</code>。网页读取的订阅主题保持为基础主题即可。</span>
+          </div>
+        )}
       </section>
 
       <section className="controls-section">
         <div className="section-heading">
           <div><span className="section-index">03</span><h2>快捷控制</h2></div>
-          <button className="add-button" type="button" onClick={() => setEditingButton({ ...emptyButton })}>
-            <span>＋</span> 新建按钮
-          </button>
+          <div className="control-heading-actions">
+            <button className="command-list-button" type="button" onClick={() => setCommandsOpen(true)}>⌘ 指令列表</button>
+            <button className="add-button" type="button" onClick={() => setEditingButton({ ...emptyButton })}>
+              <span>＋</span> 新建按钮
+            </button>
+          </div>
         </div>
 
         <div className="control-grid">
@@ -1084,6 +1141,34 @@ export default function App() {
         <p>私钥、按钮与动作链配置仅保存在你的浏览器中</p>
       </footer>
 
+      {commandsOpen && (
+        <div className="modal-backdrop" role="presentation" onMouseDown={(event) => { if (event.currentTarget === event.target) setCommandsOpen(false); }}>
+          <section className="button-modal command-modal" role="dialog" aria-modal="true" aria-labelledby="command-modal-title">
+            <div className="modal-heading">
+              <div><span>DEVICE COMMANDS</span><h2 id="command-modal-title">当前全部指令</h2></div>
+              <button type="button" onClick={() => setCommandsOpen(false)} aria-label="关闭">×</button>
+            </div>
+            <p className="command-modal-intro">这些指令与当前 ESP32-S3 固件一致，可直接发送，也可用于自定义按钮和动作链。</p>
+            <div className="command-list">
+              {(["输出控制", "传感器控制", "系统指令", "兼容指令"] as DeviceCommand["group"][]).map((group) => (
+                <div className="command-group" key={group}>
+                  <h3>{group}</h3>
+                  {deviceCommands.filter((item) => item.group === group).map((item) => (
+                    <div className="command-row" key={item.command}>
+                      <div><code>{item.command}</code><span>{item.description}</span></div>
+                      <button type="button" disabled={sendingId !== null} onClick={() => void sendCatalogCommand(item.command)}>
+                        {sendingId === `command:${item.command}` ? "发送中…" : "发送"}
+                      </button>
+                    </div>
+                  ))}
+                </div>
+              ))}
+            </div>
+            <div className="command-modal-note">闪烁周期可修改，例如 <code>led1.blink:800</code>；建议不低于 100 ms。</div>
+          </section>
+        </div>
+      )}
+
       {editingButton && (
         <div className="modal-backdrop" role="presentation" onMouseDown={(event) => { if (event.currentTarget === event.target) setEditingButton(null); }}>
           <form className="button-modal" onSubmit={saveButton}>
@@ -1244,9 +1329,7 @@ export default function App() {
             </button>
 
             <datalist id="command-options">
-              <option value="led1.on" /><option value="led1.off" /><option value="led1.blink:500" />
-              <option value="led2.on" /><option value="led2.off" /><option value="led2.blink:500" />
-              <option value="buzzer.on" /><option value="buzzer.off" /><option value="buzzer.blink:500" /><option value="all.off" />
+              {deviceCommands.map((item) => <option value={item.command} key={item.command} />)}
             </datalist>
 
             <div className="chain-editor-note"><span>i</span>用户动作链保存在当前浏览器；自动判断由网页执行，关闭网页会暂停规则。</div>
