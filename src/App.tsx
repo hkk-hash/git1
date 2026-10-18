@@ -14,6 +14,15 @@ type ControlButton = {
 
 type DelayUnit = "seconds" | "minutes" | "hours";
 type ActionTiming = "delay" | "clock";
+type SensorMetric = "temperature" | "humidity" | "smoke" | "smokeAlarm" | "light" | "lightTriggered" | "distance";
+type ConditionOperator = "<" | "<=" | ">" | ">=" | "==" | "!=";
+
+type ChainCondition = {
+  id: string;
+  metric: SensorMetric;
+  operator: ConditionOperator;
+  value: number;
+};
 
 type ChainAction = {
   id: string;
@@ -27,6 +36,10 @@ type ChainAction = {
 type ActionChain = {
   id: string;
   name: string;
+  source: "default" | "user";
+  enabled: boolean;
+  cooldownSeconds: number;
+  conditions: ChainCondition[];
   actions: ChainAction[];
 };
 
@@ -55,12 +68,32 @@ type ReceivedMessage = {
   unix: number;
 };
 
+type Telemetry = {
+  type: "telemetry";
+  version: number;
+  seq: number;
+  uptime: number;
+  sensors: {
+    temperature: number | null;
+    humidity: number | null;
+    smoke: number;
+    smokeAlarm: boolean;
+    light: number;
+    lightPercent: number;
+    lightTriggered: boolean;
+    distance: number | null;
+  };
+  enabled: { dht: boolean; mq2: boolean; light: boolean; distance: boolean };
+  outputs: { led1: "off" | "on" | "blink"; led2: "off" | "on" | "blink"; buzzer: "off" | "on" | "blink" };
+  online: boolean;
+};
+
 type Toast = { text: string; type: "success" | "error" } | null;
 
 const API_BASE = "https://apis.bemfa.com/va";
 const CONFIG_KEY = "bemfa-console-config-v1";
 const BUTTONS_KEY = "bemfa-console-buttons-v1";
-const CHAINS_KEY = "bemfa-console-chains-v1";
+const CHAINS_KEY = "bemfa-console-automation-v2";
 
 const defaultConfig: BemfaConfig = {
   privateKey: "",
@@ -72,40 +105,49 @@ const defaultConfig: BemfaConfig = {
 
 const defaultButtons: ControlButton[] = [
   {
-    id: "light-switch",
-    name: "照明开关",
+    id: "led1-switch",
+    name: "LED 1",
     kind: "toggle",
     message: "",
-    onMessage: "on",
-    offMessage: "off",
+    onMessage: "led1.on",
+    offMessage: "led1.off",
     tone: "cobalt",
+  },
+  {
+    id: "led2-switch",
+    name: "LED 2",
+    kind: "toggle",
+    message: "",
+    onMessage: "led2.on",
+    offMessage: "led2.off",
+    tone: "mint",
   },
   {
     id: "buzzer-switch",
     name: "蜂鸣器",
     kind: "toggle",
     message: "",
-    onMessage: "bar",
-    offMessage: "baroff",
+    onMessage: "buzzer.on",
+    offMessage: "buzzer.off",
     tone: "coral",
   },
   {
-    id: "breath",
-    name: "呼吸灯",
+    id: "all-off",
+    name: "全部关闭",
     kind: "pulse",
-    message: "breath",
-    onMessage: "",
-    offMessage: "",
-    tone: "mint",
-  },
-  {
-    id: "flash-three",
-    name: "闪烁 3 次",
-    kind: "pulse",
-    message: "star3",
+    message: "all.off",
     onMessage: "",
     offMessage: "",
     tone: "violet",
+  },
+  {
+    id: "refresh-state",
+    name: "立即同步",
+    kind: "pulse",
+    message: "get_state",
+    onMessage: "",
+    offMessage: "",
+    tone: "cobalt",
   },
 ];
 
@@ -134,6 +176,60 @@ function createAction(): ChainAction {
   };
 }
 
+function createCondition(): ChainCondition {
+  return { id: makeId(), metric: "distance", operator: "<", value: 10 };
+}
+
+const metricLabels: Record<SensorMetric, string> = {
+  temperature: "温度 (°C)",
+  humidity: "湿度 (%)",
+  smoke: "烟雾模拟值",
+  smokeAlarm: "烟雾报警",
+  light: "光敏模拟值",
+  lightTriggered: "光敏已触发",
+  distance: "超声距离 (cm)",
+};
+
+const defaultChains: ActionChain[] = [
+  {
+    id: "default-distance-alarm",
+    name: "近距离蜂鸣预警",
+    source: "default",
+    enabled: true,
+    cooldownSeconds: 10,
+    conditions: [{ id: "default-distance-condition", metric: "distance", operator: "<", value: 10 }],
+    actions: [{ ...createAction(), id: "default-distance-action", delayValue: 0, message: "buzzer.on" }],
+  },
+  {
+    id: "default-dark-distance-chain",
+    name: "近距 + 光照联动",
+    source: "default",
+    enabled: true,
+    cooldownSeconds: 30,
+    conditions: [
+      { id: "default-near-condition", metric: "distance", operator: "<", value: 8 },
+      { id: "default-light-condition", metric: "lightTriggered", operator: "==", value: 1 },
+    ],
+    actions: [
+      { ...createAction(), id: "default-led-blink", delayValue: 0, message: "led1.blink:500" },
+      { ...createAction(), id: "default-led-stop", delayValue: 8, message: "led1.off" },
+      { ...createAction(), id: "default-buzzer-blink", delayValue: 0, message: "buzzer.blink:500" },
+    ],
+  },
+];
+
+function createChain(): ActionChain {
+  return {
+    id: "",
+    name: "",
+    source: "user",
+    enabled: true,
+    cooldownSeconds: 30,
+    conditions: [createCondition()],
+    actions: [{ ...createAction(), delayValue: 0 }],
+  };
+}
+
 function actionDueAt(action: ChainAction, from: number) {
   if (action.timing === "delay") {
     const multiplier = action.delayUnit === "hours" ? 3_600_000 : action.delayUnit === "minutes" ? 60_000 : 1_000;
@@ -149,8 +245,40 @@ function actionDueAt(action: ChainAction, from: number) {
 
 function actionTimingLabel(action: ChainAction) {
   if (action.timing === "clock") return `到 ${action.clockTime}`;
+  if (action.delayValue === 0) return "立即";
   const unit = action.delayUnit === "hours" ? "小时" : action.delayUnit === "minutes" ? "分钟" : "秒";
   return `等待 ${action.delayValue} ${unit}`;
+}
+
+function conditionLabel(condition: ChainCondition) {
+  const value = (condition.metric === "smokeAlarm" || condition.metric === "lightTriggered")
+    ? (condition.value === 1 ? "是" : "否")
+    : condition.value;
+  return `${metricLabels[condition.metric]} ${condition.operator} ${value}`;
+}
+
+function conditionMatches(condition: ChainCondition, telemetry: Telemetry) {
+  const raw = telemetry.sensors[condition.metric];
+  if (raw === null || raw === undefined) return false;
+  const current = typeof raw === "boolean" ? (raw ? 1 : 0) : raw;
+  switch (condition.operator) {
+    case "<": return current < condition.value;
+    case "<=": return current <= condition.value;
+    case ">": return current > condition.value;
+    case ">=": return current >= condition.value;
+    case "==": return current === condition.value;
+    case "!=": return current !== condition.value;
+  }
+}
+
+function parseTelemetry(message: string): Telemetry | null {
+  try {
+    const value = JSON.parse(message) as Partial<Telemetry>;
+    if (value.type !== "telemetry" || !value.sensors || !value.enabled || !value.outputs) return null;
+    return value as Telemetry;
+  } catch {
+    return null;
+  }
 }
 
 function countdownLabel(milliseconds: number) {
@@ -179,7 +307,7 @@ async function readJson(response: Response) {
 export default function App() {
   const [config, setConfig] = useState<BemfaConfig>(defaultConfig);
   const [buttons, setButtons] = useState<ControlButton[]>(defaultButtons);
-  const [chains, setChains] = useState<ActionChain[]>([]);
+  const [chains, setChains] = useState<ActionChain[]>(defaultChains);
   const [chainRuns, setChainRuns] = useState<Record<string, ChainRun>>({});
   const [toggleStates, setToggleStates] = useState<Record<string, boolean>>({});
   const [editingButton, setEditingButton] = useState<ControlButton | null>(null);
@@ -193,9 +321,15 @@ export default function App() {
   const [messages, setMessages] = useState<ReceivedMessage[]>([]);
   const [toast, setToast] = useState<Toast>(null);
   const [lastSync, setLastSync] = useState<string>("尚未同步");
+  const [telemetry, setTelemetry] = useState<Telemetry | null>(null);
+  const [telemetryReceivedAt, setTelemetryReceivedAt] = useState(0);
+  const [sensorSending, setSensorSending] = useState<string | null>(null);
   const [now, setNow] = useState(() => Date.now());
   const knownMessages = useRef(new Set<string>());
+  const lastTelemetrySequence = useRef<number | null>(null);
   const executingChains = useRef(new Set<string>());
+  const ruleLatch = useRef<Record<string, boolean>>({});
+  const lastRuleRun = useRef<Record<string, number>>({});
   const toastTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   useEffect(() => {
@@ -203,9 +337,21 @@ export default function App() {
       const savedConfig = localStorage.getItem(CONFIG_KEY);
       const savedButtons = localStorage.getItem(BUTTONS_KEY);
       const savedChains = localStorage.getItem(CHAINS_KEY);
-      if (savedConfig) setConfig((current) => ({ ...current, ...JSON.parse(savedConfig) }));
+      if (savedConfig) {
+        const parsedConfig = { ...defaultConfig, ...JSON.parse(savedConfig) } as BemfaConfig;
+        setConfig(parsedConfig);
+        if (parsedConfig.privateKey && getTopicList(parsedConfig.subscribeTopics).length > 0) setIsListening(true);
+      }
       if (savedButtons) setButtons(JSON.parse(savedButtons));
-      if (savedChains) setChains(JSON.parse(savedChains));
+      if (savedChains) {
+        const userChains = (JSON.parse(savedChains) as Partial<ActionChain>[]).map((chain) => ({
+          ...createChain(),
+          ...chain,
+          source: "user" as const,
+          conditions: chain.conditions?.length ? chain.conditions : [createCondition()],
+        }));
+        setChains([...defaultChains, ...userChains]);
+      }
     } catch {
       // Ignore malformed local data and keep the safe defaults.
     }
@@ -221,7 +367,7 @@ export default function App() {
   }, [buttons]);
 
   useEffect(() => {
-    localStorage.setItem(CHAINS_KEY, JSON.stringify(chains));
+    localStorage.setItem(CHAINS_KEY, JSON.stringify(chains.filter((chain) => chain.source === "user")));
   }, [chains]);
 
   useEffect(() => {
@@ -372,7 +518,20 @@ export default function App() {
         }),
       );
 
-      const fresh = results.flat().filter((item) => {
+      const allMessages = results.flat();
+      const latestTelemetry = allMessages
+        .map((item) => ({ item, value: parseTelemetry(item.message) }))
+        .filter((entry): entry is { item: ReceivedMessage; value: Telemetry } => entry.value !== null)
+        .sort((a, b) => b.item.unix - a.item.unix)[0];
+      if (latestTelemetry) {
+        if (latestTelemetry.value.seq !== lastTelemetrySequence.current) {
+          lastTelemetrySequence.current = latestTelemetry.value.seq;
+          setTelemetry(latestTelemetry.value);
+          setTelemetryReceivedAt(Date.now());
+        }
+      }
+
+      const fresh = allMessages.filter((item) => {
         if (knownMessages.current.has(item.id)) return false;
         knownMessages.current.add(item.id);
         return true;
@@ -388,6 +547,16 @@ export default function App() {
       setIsPolling(false);
     }
   }, [config.privateKey, config.subscribeTopics, notify]);
+
+  useEffect(() => {
+    if (!telemetry) return;
+    setToggleStates((current) => ({
+      ...current,
+      "led1-switch": telemetry.outputs.led1 !== "off",
+      "led2-switch": telemetry.outputs.led2 !== "off",
+      "buzzer-switch": telemetry.outputs.buzzer !== "off",
+    }));
+  }, [telemetry]);
 
   useEffect(() => {
     if (!isListening) return;
@@ -415,6 +584,21 @@ export default function App() {
     knownMessages.current.clear();
     setIsListening(true);
     notify("已开始接收主题消息");
+  };
+
+  const setSensorEnabled = async (sensor: keyof Telemetry["enabled"]) => {
+    if (!validateConnection() || !telemetry || sensorSending) return;
+    const next = !telemetry.enabled[sensor];
+    setSensorSending(sensor);
+    try {
+      await publish(`sensor.${sensor}.${next ? "on" : "off"}`);
+      setTelemetry({ ...telemetry, enabled: { ...telemetry.enabled, [sensor]: next } });
+      notify(`${sensor.toUpperCase()} · 已${next ? "启用" : "停用"}`);
+    } catch (error) {
+      notify(error instanceof Error ? error.message : "传感器控制失败", "error");
+    } finally {
+      setSensorSending(null);
+    }
   };
 
   const saveButton = (event: FormEvent<HTMLFormElement>) => {
@@ -448,11 +632,12 @@ export default function App() {
     event.preventDefault();
     if (!editingChain) return;
     if (!editingChain.name.trim()) return notify("动作链名称不能为空", "error");
+    if (editingChain.conditions.length === 0) return notify("请至少添加一个触发条件", "error");
     if (editingChain.actions.length === 0) return notify("请至少添加一个动作", "error");
     for (const action of editingChain.actions) {
       if (!action.message.trim()) return notify("每个动作都需要填写发送消息", "error");
-      if (action.timing === "delay" && (!Number.isFinite(action.delayValue) || action.delayValue <= 0)) {
-        return notify("等待时间必须大于 0", "error");
+      if (action.timing === "delay" && (!Number.isFinite(action.delayValue) || action.delayValue < 0)) {
+        return notify("等待时间不能小于 0", "error");
       }
       if (action.timing === "clock" && !/^([01]\d|2[0-3]):[0-5]\d$/.test(action.clockTime)) {
         return notify("请选择有效的执行时刻", "error");
@@ -463,6 +648,8 @@ export default function App() {
       ...editingChain,
       id: editingChain.id || makeId(),
       name: editingChain.name.trim(),
+      source: "user" as const,
+      cooldownSeconds: Math.max(1, editingChain.cooldownSeconds || 1),
       actions: editingChain.actions.map((action) => ({ ...action, message: action.message.trim() })),
     };
     setChains((current) => {
@@ -491,7 +678,20 @@ export default function App() {
     setEditingChain({ ...editingChain, actions: editingChain.actions.filter((action) => action.id !== actionId) });
   };
 
-  const startChain = (chain: ActionChain) => {
+  const updateEditingCondition = (conditionId: string, patch: Partial<ChainCondition>) => {
+    if (!editingChain) return;
+    setEditingChain({
+      ...editingChain,
+      conditions: editingChain.conditions.map((condition) => condition.id === conditionId ? { ...condition, ...patch } : condition),
+    });
+  };
+
+  const removeEditingCondition = (conditionId: string) => {
+    if (!editingChain || editingChain.conditions.length === 1) return;
+    setEditingChain({ ...editingChain, conditions: editingChain.conditions.filter((condition) => condition.id !== conditionId) });
+  };
+
+  const startChain = useCallback((chain: ActionChain, automatic = false) => {
     if (!validateConnection()) return;
     if (chain.actions.length === 0) return notify("这个动作链还没有动作", "error");
     const token = makeId();
@@ -505,8 +705,25 @@ export default function App() {
         remainingMs: null,
       },
     }));
-    notify(`${chain.name} · 已启动`);
-  };
+    notify(`${chain.name} · ${automatic ? "条件满足，已触发" : "已启动"}`);
+  }, [notify, validateConnection]);
+
+  useEffect(() => {
+    if (!telemetry || !isListening) return;
+    const currentTime = Date.now();
+    chains.forEach((chain) => {
+      if (!chain.enabled || chain.conditions.length === 0) return;
+      const matches = chain.conditions.every((condition) => conditionMatches(condition, telemetry));
+      const wasMatching = ruleLatch.current[chain.id] ?? false;
+      ruleLatch.current[chain.id] = matches;
+      const active = ["waiting", "sending", "paused"].includes(chainRuns[chain.id]?.status ?? "");
+      const cooledDown = currentTime - (lastRuleRun.current[chain.id] ?? 0) >= chain.cooldownSeconds * 1000;
+      if (matches && !wasMatching && !active && cooledDown) {
+        lastRuleRun.current[chain.id] = currentTime;
+        startChain(chain, true);
+      }
+    });
+  }, [chainRuns, chains, isListening, startChain, telemetry]);
 
   const pauseOrResumeChain = (chain: ActionChain) => {
     const run = chainRuns[chain.id];
@@ -540,8 +757,25 @@ export default function App() {
   };
 
   const editChain = (chain: ActionChain) => {
+    if (chain.source === "default") return;
     resetChain(chain, true);
     setEditingChain({ ...chain, actions: chain.actions.map((action) => ({ ...action })) });
+  };
+
+  const duplicateChain = (chain: ActionChain) => {
+    setEditingChain({
+      ...chain,
+      id: "",
+      name: `${chain.name}（副本）`,
+      source: "user",
+      conditions: chain.conditions.map((condition) => ({ ...condition, id: makeId() })),
+      actions: chain.actions.map((action) => ({ ...action, id: makeId() })),
+    });
+  };
+
+  const toggleChainEnabled = (chain: ActionChain) => {
+    setChains((current) => current.map((item) => item.id === chain.id ? { ...item, enabled: !item.enabled } : item));
+    ruleLatch.current[chain.id] = false;
   };
 
   const removeChain = (chain: ActionChain) => {
@@ -557,6 +791,8 @@ export default function App() {
     () => Object.values(chainRuns).filter((run) => run.status === "waiting" || run.status === "sending").length,
     [chainRuns],
   );
+  const deviceOnline = Boolean(telemetry?.online && telemetryReceivedAt && now - telemetryReceivedAt < Math.max(8000, config.pollSeconds * 3000));
+  const userChainCount = chains.filter((chain) => chain.source === "user").length;
 
   return (
     <main className="app-shell">
@@ -591,7 +827,7 @@ export default function App() {
           </div>
           <div className="hero-stats">
             <div><strong>{buttons.length.toString().padStart(2, "0")}</strong><span>控制按钮</span></div>
-            <div><strong>{chains.length.toString().padStart(2, "0")}</strong><span>动作链</span></div>
+            <div><strong>{userChainCount.toString().padStart(2, "0")}</strong><span>用户动作链</span></div>
             <div><strong>{messages.length.toString().padStart(2, "0")}</strong><span>本次消息</span></div>
           </div>
         </div>
@@ -638,9 +874,46 @@ export default function App() {
         </label>
       </section>
 
+      <section className="sensors-section">
+        <div className="section-heading sensor-heading">
+          <div><span className="section-index">02</span><h2>实时传感器</h2></div>
+          <div className={`device-health ${deviceOnline ? "online" : ""}`}>
+            <span className="status-dot" />
+            {deviceOnline ? `设备在线 · 运行 ${Math.floor((telemetry?.uptime ?? 0) / 60)} 分钟` : "等待设备遥测"}
+          </div>
+        </div>
+        <div className="sensor-grid">
+          <article className={`sensor-card ${telemetry?.enabled.dht ? "enabled" : "disabled"}`}>
+            <div className="sensor-card-head"><span>DHT11</span><button type="button" disabled={!telemetry || sensorSending !== null} onClick={() => void setSensorEnabled("dht")}>{telemetry?.enabled.dht ? "停用" : "启用"}</button></div>
+            <div className="sensor-values"><strong>{telemetry?.sensors.temperature ?? "--"}<small> °C</small></strong><strong>{telemetry?.sensors.humidity ?? "--"}<small> %RH</small></strong></div>
+            <p>{!telemetry ? "等待遥测" : telemetry.enabled.dht ? "温湿度采集中" : "采集已停用"}</p>
+          </article>
+          <article className={`sensor-card ${telemetry?.enabled.mq2 ? "enabled" : "disabled"} ${telemetry?.sensors.smokeAlarm ? "alarm" : ""}`}>
+            <div className="sensor-card-head"><span>MQ-2</span><button type="button" disabled={!telemetry || sensorSending !== null} onClick={() => void setSensorEnabled("mq2")}>{telemetry?.enabled.mq2 ? "停用" : "启用"}</button></div>
+            <div className="sensor-values"><strong>{telemetry?.sensors.smoke ?? "--"}<small> RAW</small></strong><span className={`sensor-badge ${telemetry?.sensors.smokeAlarm ? "danger" : ""}`}>{telemetry?.sensors.smokeAlarm ? "报警" : "正常"}</span></div>
+            <p>{!telemetry ? "等待遥测" : telemetry.enabled.mq2 ? "数字报警低电平触发" : "采集已停用"}</p>
+          </article>
+          <article className={`sensor-card ${telemetry?.enabled.light ? "enabled" : "disabled"}`}>
+            <div className="sensor-card-head"><span>光敏传感器</span><button type="button" disabled={!telemetry || sensorSending !== null} onClick={() => void setSensorEnabled("light")}>{telemetry?.enabled.light ? "停用" : "启用"}</button></div>
+            <div className="sensor-values"><strong>{telemetry?.sensors.light ?? "--"}<small> RAW</small></strong><strong>{telemetry?.sensors.lightPercent?.toFixed(0) ?? "--"}<small> %</small></strong></div>
+            <p>{!telemetry ? "等待遥测" : telemetry.sensors.lightTriggered ? "已达到固件触发阈值" : telemetry.enabled.light ? "未触发" : "采集已停用"}</p>
+          </article>
+          <article className={`sensor-card ${telemetry?.enabled.distance ? "enabled" : "disabled"}`}>
+            <div className="sensor-card-head"><span>HC-SR04</span><button type="button" disabled={!telemetry || sensorSending !== null} onClick={() => void setSensorEnabled("distance")}>{telemetry?.enabled.distance ? "停用" : "启用"}</button></div>
+            <div className="sensor-values"><strong>{telemetry?.sensors.distance ?? "--"}<small> cm</small></strong></div>
+            <p>{!telemetry ? "等待遥测" : telemetry.sensors.distance === null ? "超出量程或等待回波" : telemetry.enabled.distance ? "距离实时测量" : "采集已停用"}</p>
+          </article>
+        </div>
+        <div className="output-strip">
+          <span>下位机输出状态</span>
+          {(["led1", "led2", "buzzer"] as const).map((output) => <b className={telemetry?.outputs[output] !== "off" ? "active" : ""} key={output}>{output.toUpperCase()} · {telemetry?.outputs[output] ?? "未知"}</b>)}
+          <small>{telemetryReceivedAt ? `最近遥测 ${new Date(telemetryReceivedAt).toLocaleTimeString("zh-CN", { hour12: false })}` : "尚未收到 JSON 遥测"}</small>
+        </div>
+      </section>
+
       <section className="controls-section">
         <div className="section-heading">
-          <div><span className="section-index">02</span><h2>快捷控制</h2></div>
+          <div><span className="section-index">03</span><h2>快捷控制</h2></div>
           <button className="add-button" type="button" onClick={() => setEditingButton({ ...emptyButton })}>
             <span>＋</span> 新建按钮
           </button>
@@ -686,20 +959,20 @@ export default function App() {
 
       <section className="chains-section">
         <div className="section-heading">
-          <div><span className="section-index">03</span><h2>动作链</h2></div>
-          <button className="add-button chain-add" type="button" onClick={() => setEditingChain({ id: "", name: "", actions: [createAction()] })}>
+          <div><span className="section-index">04</span><h2>条件动作链</h2></div>
+          <button className="add-button chain-add" type="button" onClick={() => setEditingChain(createChain())}>
             <span>＋</span> 新建动作链
           </button>
         </div>
 
         <div className="chain-notice">
           <span className="notice-icon">⌁</span>
-          <p><strong>顺序执行</strong> · 每个动作会在上一个动作完成后开始计时；指定时刻若已过，将安排到次日。</p>
-          <small>{activeChainCount > 0 ? `${activeChainCount} 条动作链正在运行` : "执行期间请保持网页打开"}</small>
+          <p><strong>自动条件判断</strong> · 多个条件按 AND 组合；从“不满足”变为“满足”时触发，动作按顺序执行。</p>
+          <small>{activeChainCount > 0 ? `${activeChainCount} 条动作链正在运行` : "自动执行期间请保持网页打开"}</small>
         </div>
 
         {chains.length === 0 ? (
-          <button className="chain-empty" type="button" onClick={() => setEditingChain({ id: "", name: "", actions: [createAction()] })}>
+          <button className="chain-empty" type="button" onClick={() => setEditingChain(createChain())}>
             <span className="timeline-preview"><i /><i /><i /></span>
             <strong>创建第一条动作链</strong>
             <small>组合等待时间、指定时刻与发送消息</small>
@@ -719,14 +992,22 @@ export default function App() {
               return (
                 <article className={`chain-card ${isActive ? "is-running" : ""} status-${run?.status ?? "idle"}`} key={chain.id}>
                   <div className="chain-card-head">
-                    <span className="chain-index">CHAIN {String(index + 1).padStart(2, "0")}</span>
-                    <button type="button" onClick={() => editChain(chain)}>编辑</button>
+                    <span className="chain-index">{chain.source === "default" ? "DEFAULT" : "USER"} · CHAIN {String(index + 1).padStart(2, "0")}</span>
+                    <div className="chain-head-actions">
+                      <button type="button" onClick={() => toggleChainEnabled(chain)}>{chain.enabled ? "停用" : "启用"}</button>
+                      <button type="button" onClick={() => chain.source === "default" ? duplicateChain(chain) : editChain(chain)}>{chain.source === "default" ? "复制" : "编辑"}</button>
+                    </div>
                   </div>
                   <div className="chain-title-row">
-                    <div><h3>{chain.name}</h3><p>{chain.actions.length} 个动作 · 顺序执行</p></div>
+                    <div><h3>{chain.name}</h3><p>{chain.conditions.length} 个 AND 条件 · {chain.actions.length} 个动作 · 冷却 {chain.cooldownSeconds} 秒</p></div>
                     <span className={`chain-state ${isActive ? "active" : ""}`}>
                       {run?.status === "waiting" ? "等待中" : run?.status === "sending" ? "发送中" : run?.status === "paused" ? "已暂停" : run?.status === "completed" ? "已完成" : run?.status === "error" ? "执行失败" : "未启动"}
                     </span>
+                  </div>
+
+                  <div className="condition-summary">
+                    <span>当</span>
+                    {chain.conditions.map((condition, conditionIndex) => <code key={condition.id}>{conditionIndex > 0 ? "且 " : ""}{conditionLabel(condition)}</code>)}
                   </div>
 
                   <ol className="chain-action-list">
@@ -745,11 +1026,11 @@ export default function App() {
                     {run?.status === "sending" && currentAction ? <><span>正在发送</span><strong>“{currentAction.message}”</strong></> : null}
                     {run?.status === "completed" ? <><span>运行结果</span><strong>全部动作执行完成</strong></> : null}
                     {run?.status === "error" ? <><span>运行结果</span><strong>{run.error}</strong></> : null}
-                    {!run ? <><span>首个动作</span><strong>{actionTimingLabel(chain.actions[0])}后执行</strong></> : null}
+                    {!run ? <><span>触发状态</span><strong>{chain.enabled ? "等待条件满足" : "规则已停用"}</strong></> : null}
                   </div>
                   <div className="chain-card-actions">
                     {!isActive || run?.status === "completed" || run?.status === "error" ? (
-                      <button className="chain-primary" type="button" onClick={() => startChain(chain)}>▶ 启动动作链</button>
+                      <button className="chain-primary" type="button" disabled={!chain.enabled} onClick={() => startChain(chain)}>▶ 手动测试</button>
                     ) : (
                       <button className="chain-primary" type="button" disabled={run?.status === "sending"} onClick={() => pauseOrResumeChain(chain)}>
                         {run?.status === "paused" ? "▶ 继续" : run?.status === "sending" ? "正在发送…" : "Ⅱ 暂停"}
@@ -766,7 +1047,7 @@ export default function App() {
 
       <section className="monitor-section">
         <div className="section-heading monitor-heading">
-          <div><span className="section-index">04</span><h2>消息订阅</h2></div>
+          <div><span className="section-index">05</span><h2>消息订阅</h2></div>
           <div className="monitor-actions">
             <span className="sync-label">{isPolling ? "正在同步…" : `上次同步 ${lastSync}`}</span>
             <button className={`listen-button ${isListening ? "stop" : ""}`} type="button" onClick={toggleListening}>
@@ -868,8 +1149,47 @@ export default function App() {
 
             <label className="field">
               <span>动作链名称</span>
-              <input autoFocus value={editingChain.name} onChange={(event) => setEditingChain({ ...editingChain, name: event.target.value })} placeholder="例如：早晨唤醒流程" />
+              <input autoFocus value={editingChain.name} onChange={(event) => setEditingChain({ ...editingChain, name: event.target.value })} placeholder="例如：近距离自动报警" />
             </label>
+
+            <div className="rule-meta-fields">
+              <label className="field">
+                <span>再次触发冷却时间</span>
+                <div className="suffix-input"><input type="number" min="1" value={editingChain.cooldownSeconds} onChange={(event) => setEditingChain({ ...editingChain, cooldownSeconds: Number(event.target.value) })} /><i>秒</i></div>
+              </label>
+              <label className="rule-enable"><input type="checkbox" checked={editingChain.enabled} onChange={(event) => setEditingChain({ ...editingChain, enabled: event.target.checked })} /><span>保存后立即启用</span></label>
+            </div>
+
+            <div className="chain-editor-heading">
+              <div><strong>触发条件</strong><small>所有条件同时满足（AND）时触发</small></div>
+              <span>{editingChain.conditions.length} CONDITIONS</span>
+            </div>
+            <div className="condition-editor-list">
+              {editingChain.conditions.map((condition, index) => {
+                const booleanMetric = condition.metric === "smokeAlarm" || condition.metric === "lightTriggered";
+                return (
+                  <div className="condition-editor" key={condition.id}>
+                    <b>{index === 0 ? "当" : "且"}</b>
+                    <select value={condition.metric} onChange={(event) => {
+                      const metric = event.target.value as SensorMetric;
+                      updateEditingCondition(condition.id, { metric, value: metric === "smokeAlarm" || metric === "lightTriggered" ? 1 : condition.value });
+                    }}>
+                      {(Object.keys(metricLabels) as SensorMetric[]).map((metric) => <option value={metric} key={metric}>{metricLabels[metric]}</option>)}
+                    </select>
+                    <select value={condition.operator} onChange={(event) => updateEditingCondition(condition.id, { operator: event.target.value as ConditionOperator })}>
+                      <option value="<">小于</option><option value="<=">小于等于</option><option value=">">大于</option><option value=">=">大于等于</option><option value="==">等于</option><option value="!=">不等于</option>
+                    </select>
+                    {booleanMetric ? (
+                      <select value={condition.value} onChange={(event) => updateEditingCondition(condition.id, { value: Number(event.target.value) })}><option value={1}>是</option><option value={0}>否</option></select>
+                    ) : (
+                      <input type="number" step="0.1" value={condition.value} onChange={(event) => updateEditingCondition(condition.id, { value: Number(event.target.value) })} />
+                    )}
+                    <button type="button" disabled={editingChain.conditions.length === 1} onClick={() => removeEditingCondition(condition.id)}>×</button>
+                  </div>
+                );
+              })}
+            </div>
+            <button className="append-condition" type="button" onClick={() => setEditingChain({ ...editingChain, conditions: [...editingChain.conditions, createCondition()] })}>＋ 添加 AND 条件</button>
 
             <div className="chain-editor-heading">
               <div><strong>动作列表</strong><small>按照从上到下的顺序执行</small></div>
@@ -898,7 +1218,7 @@ export default function App() {
                       <label className="field timing-field">
                         <span>等待时长</span>
                         <div>
-                          <input type="number" min="1" step="1" value={action.delayValue} onChange={(event) => updateEditingAction(action.id, { delayValue: Number(event.target.value) })} />
+                          <input type="number" min="0" step="1" value={action.delayValue} onChange={(event) => updateEditingAction(action.id, { delayValue: Number(event.target.value) })} />
                           <select value={action.delayUnit} onChange={(event) => updateEditingAction(action.id, { delayUnit: event.target.value as DelayUnit })}>
                             <option value="seconds">秒</option><option value="minutes">分钟</option><option value="hours">小时</option>
                           </select>
@@ -912,7 +1232,7 @@ export default function App() {
                     )}
                     <label className="field message-field">
                       <span>发送消息</span>
-                      <input value={action.message} onChange={(event) => updateEditingAction(action.id, { message: event.target.value })} placeholder="例如：on" />
+                      <input value={action.message} onChange={(event) => updateEditingAction(action.id, { message: event.target.value })} placeholder="例如：led1.blink:500" list="command-options" />
                     </label>
                   </div>
                 </div>
@@ -923,7 +1243,13 @@ export default function App() {
               <span>＋</span><strong>添加下一个动作</strong><small>可继续设置等待时间或指定时刻</small>
             </button>
 
-            <div className="chain-editor-note"><span>i</span>动作链由当前网页执行，关闭网页或设备休眠会暂停定时任务。</div>
+            <datalist id="command-options">
+              <option value="led1.on" /><option value="led1.off" /><option value="led1.blink:500" />
+              <option value="led2.on" /><option value="led2.off" /><option value="led2.blink:500" />
+              <option value="buzzer.on" /><option value="buzzer.off" /><option value="buzzer.blink:500" /><option value="all.off" />
+            </datalist>
+
+            <div className="chain-editor-note"><span>i</span>用户动作链保存在当前浏览器；自动判断由网页执行，关闭网页会暂停规则。</div>
 
             <div className="modal-actions">
               {editingChain.id ? <button className="delete-button" type="button" onClick={() => removeChain(editingChain)}>删除动作链</button> : <span />}
